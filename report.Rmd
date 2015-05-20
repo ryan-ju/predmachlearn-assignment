@@ -1,0 +1,151 @@
+---
+title: "HAR Report"
+output: 
+  html_document:
+    toc: true
+    theme: united
+---
+Data Cleaning
+-------------
+* Load data
+```{r}
+library(caret)
+library(ggplot2)
+data <- read.csv("pml-training.csv")
+```
+
+* Split data into training and cross validation sets
+```{r}
+set.seed(33833)
+inTrain <- createDataPartition(y = data$classe, p = 0.7, list = F)
+# Training set
+tr <- data[inTrain, ]
+# Cross validation set
+cv <- data[-inTrain, ]
+```
+
+* Remove irrelevant columns and convert all columns apart from 'classe' to numeric.
+```{r}
+tr <- tr[, -(1:7)]
+classe_index <- which(names(tr) %in% "classe")
+tr[, -classe_index] <- sapply(tr[, -classe_index], as.numeric)
+```
+
+* Remove columns that are more than 80% NA
+```{r}
+# Find indexes of columns that are over 80% NA
+data_reduced <- data[, -(1:7)]
+classe_index <- which(names(tr) %in% "classe")
+data_reduced[, -classe_index] <- sapply(data_reduced[, -classe_index], as.numeric)
+na_reduced_index <- unlist(lapply(names(data_reduced), function(x, l) if (sum(is.na(data_reduced[x])) < 0.8 * l) { TRUE } else { FALSE }, l = dim(data_reduced)[1]))
+tr_clean <- tr[, na_reduced_index]
+# Dimension
+dim(tr_clean)
+```
+
+* Find and remove highly correlated columns
+```{r}
+descrCor <- cor(tr_clean[, -which(names(tr_clean) %in% "classe")])
+highlyCorDescr <- findCorrelation(descrCor, cutoff = .75)
+tr_clean_dec <- tr_clean[, -highlyCorDescr]
+# Dimension
+dim(tr_clean_dec)
+```
+
+* Principle component analysis
+```{r}
+prep <- preProcess(tr_clean_dec[, -which(names(tr_clean_dec) %in% "classe")], method = "pca", thresh = .7)
+trPC <- predict(prep, tr_clean_dec[, -which(names(tr_clean_dec) %in% "classe")])
+# Dimension
+dim(trPC)
+```
+
+* Functions
+```{r}
+# Function that removes unnecessary columns
+cleaning <- function(x) {
+  # Remove irrelevant columns
+  x <- x[, -(1:7)]
+  # Convert all predictor columns to numeric
+  c_index <- which(names(x) %in% "classe")
+  x[, -c_index] <- sapply(x[, -c_index], as.numeric)
+  # Remove NA columns
+  x <- x[, na_reduced_index]
+  # Remove highly correlated columns
+  x <- x[, -highlyCorDescr]
+  x
+}
+
+# Function that applies PCA to x
+pca <- function(prep, x) {
+  # Apply principle component analysis
+  x <- predict(prep, x[, -which(names(x) %in% "classe")])
+  x
+}
+```
+
+Training
+--------
+```{r}
+# Train a random forest
+s <- sample(dim(tr)[1], 4000)
+modFit <- train(tr[s, ]$classe ~ ., method = "rf", data = trPC[s, ], prox = T, ntree = 10)
+```
+
+Evaluation
+----------
+```{r}
+# Evaluate training set errors
+confusionMatrix(predict(modFit, newdata = trPC), tr$classe)
+# Evaluate cross validation set errors
+cvPC <- pca(prep, cleaning(cv))
+confusionMatrix(predict(modFit, newdata = cvPC), cv$classe)
+```
+
+Prediction
+----------
+I had to remove some columns from the training set, because the test set has them as NA.  This is not ideal, but it makes the training easier.
+
+The following is the new cleaning funciton:
+```{r}
+cleaning2 <- function(x) {
+  # Remove irrelevant columns
+  x <- x[, -(1:7)]
+  # Convert all predictor columns to numeric
+  c_index <- which(names(x) %in% "classe")
+  x[, -c_index] <- sapply(x[, -c_index], as.numeric)
+  # Remove NA columns
+  x <- x[, na_reduced_index]
+  # Remove highly correlated columns
+  x <- x[, -highlyCorDescr]
+  # The name of the columns that are NA in the test set
+  na_col <- c("max_yaw_belt", "kurtosis_yaw_arm", "skewness_yaw_arm", "skewness_pitch_dumbbell", "max_yaw_dumbbell")
+  # Remove the NA columns
+  x <- x[, !(names(x) %in% na_col)]
+  x
+}
+```
+
+Retrain the model
+```{r}
+# Train a random forest
+s <- sample(dim(tr)[1], 4000)
+# Training set
+tr <- data[inTrain, ]
+tr_clean_dec2 <- cleaning2(tr)
+prep2 <- preProcess(tr_clean_dec2[, -which(names(tr_clean_dec2) %in% "classe")], method = "pca", thresh = .7)
+trPC2 <- pca(prep2, tr_clean_dec2)
+modFit2 <- train(tr[s, ]$classe ~ ., method = "rf", data = trPC2[s, ], prox = T, ntree = 10)
+```
+
+Predict the test set
+```{r}
+test <- read.csv("pml-testing.csv")
+problem_id <- test$problem_id
+# Remove problem_id column
+test$problem_id <- NULL
+# Add dummy classe column
+test$classe <- rep("", 20)
+testPC <- pca(prep2, cleaning2(test))
+predict(modFit2, newdata = testPC)
+```
